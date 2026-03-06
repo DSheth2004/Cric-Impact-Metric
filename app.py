@@ -3,11 +3,16 @@ CricImpact - IPL T20 Player Impact Dashboard
 Dark-themed, modern, animated Plotly charts with glassmorphism UI.
 """
 import os
+import json
+import tempfile
+import html as html_lib
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+
+from match_impact_from_files import compute_match_rankings_from_files
 
 # --- Paths ---
 DIR = "cricket_impact"
@@ -139,6 +144,88 @@ def stat_row(label, value, color=CYAN):
 </div>"""
 
 
+def get_groq_key():
+    key = os.getenv("GROQ_API_KEY")
+    if key:
+        return key
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        return None
+    return os.getenv("GROQ_API_KEY")
+
+
+def groq_generate(prompt, api_key, model=None):
+    if model is None:
+        model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+    try:
+        from groq import Groq
+    except Exception as exc:
+        return None, f"Missing dependency 'groq': {exc}"
+
+    try:
+        client = Groq(api_key=api_key)
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are an IPL analyst."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.4,
+            max_completion_tokens=1200,
+            top_p=1,
+            stream=False,
+        )
+        return completion.choices[0].message.content, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def parse_explanations(text):
+    rows = []
+    current_team = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "|" not in line:
+            current_team = line.replace("**", "").strip()
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) >= 4:
+            rows.append({
+                "Team": (current_team or "").replace("**", "").strip(),
+                "Player": parts[0],
+                "Role": parts[1],
+                "Key Stat": parts[2],
+                "Impact Explanation": " | ".join(parts[3:]),
+            })
+    return pd.DataFrame(rows)
+
+
+def render_team_table(team_name, team_df):
+    cols = ["No.", "Player", "Role", "Key Stat", "Impact Explanation"]
+    head = "".join(f"<th>{html_lib.escape(c)}</th>" for c in cols)
+    rows = []
+    for _, row in team_df.iterrows():
+        cells = []
+        for col in cols:
+            val = "" if pd.isna(row[col]) else str(row[col])
+            cells.append(f"<td>{html_lib.escape(val)}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    body = "".join(rows)
+    return (
+        f"<div class='impact-table-wrap'>"
+        f"<div class='impact-team'>{html_lib.escape(team_name)}</div>"
+        f"<table class='impact-table'>"
+        f"<thead><tr>{head}</tr></thead>"
+        f"<tbody>{body}</tbody>"
+        f"</table></div>"
+    )
+
+
 # --- Page setup ---
 st.set_page_config(page_title="CricImpact - IPL T20", layout="wide", page_icon="C")
 
@@ -238,6 +325,14 @@ st.markdown(f"""
   .glass {{
       animation: fadeSlideUp 0.6s ease-out both;
   }}
+    .impact-table-wrap {{ margin-bottom: 22px; }}
+    .impact-team {{ font-weight: 700; font-size: 1.05rem; margin: 6px 0 10px; color: {TEXT}; }}
+    .impact-table {{ width: 100%; border-collapse: collapse; background: {CARD_BG}; border: 1px solid {BORDER}; }}
+    .impact-table th, .impact-table td {{
+            padding: 10px 12px; border-bottom: 1px solid {BORDER}; text-align: left; vertical-align: top;
+    }}
+    .impact-table th {{ background: {SURFACE}; font-weight: 600; color: {TEXT}; }}
+    .impact-table td {{ white-space: normal; word-break: break-word; color: {TEXT}; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -330,7 +425,7 @@ st.markdown("""
   <p>IPL T20 Player Impact Analytics Dashboard</p>
 </div>""", unsafe_allow_html=True)
 
-tabs = st.tabs(["Overview", "Player Profile", "Head-to-Head", "Match Explorer"])
+tabs = st.tabs(["Overview", "Player Profile", "Head-to-Head", "Match Explorer", "Match Impact Upload"])
 
 
 # ==================== TAB 1 - OVERVIEW ====================
@@ -846,4 +941,95 @@ with tabs[3]:
             st.dataframe(m[show_c], width='stretch', height=400, hide_index=True)
         else:
             st.caption("No matches for the selected filters.")
+
+
+# ==================== TAB 5 - MATCH IMPACT UPLOAD ====================
+with tabs[4]:
+    st.markdown("#### Upload Match Files")
+    col_u1, col_u2 = st.columns(2)
+    with col_u1:
+        ball_file = st.file_uploader("Match CSV (e.g., 335982.csv)", type=["csv"], key="ball_upload")
+    with col_u2:
+        info_file = st.file_uploader("Info CSV (e.g., 335982_info.csv)", type=["csv"], key="info_upload")
+
+    if "upload_rankings" not in st.session_state:
+        st.session_state.upload_rankings = None
+    if "upload_show_cols" not in st.session_state:
+        st.session_state.upload_show_cols = None
+
+    if ball_file is None or info_file is None:
+        st.info("Upload both files to compute match impact.")
+    else:
+        if not info_file.name.endswith("_info.csv"):
+            st.warning("Info file name should end with _info.csv.")
+
+        if st.button("Compute match impact", key="match_impact_btn"):
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as f_ball:
+                    f_ball.write(ball_file.getbuffer())
+                    ball_path = f_ball.name
+                with tempfile.NamedTemporaryFile(delete=False, suffix="_info.csv") as f_info:
+                    f_info.write(info_file.getbuffer())
+                    info_path = f_info.name
+
+                rankings = compute_match_rankings_from_files(ball_path, info_path)
+                show_cols = [c for c in [
+                    "match_id", "player", "role", "player_team", "opposition", "key_stat",
+                    "performance_score", "impact_score", "impact_category", "wpa_score", "clutch_score"
+                ] if c in rankings.columns]
+                st.session_state.upload_rankings = rankings
+                st.session_state.upload_show_cols = show_cols
+            except Exception as exc:
+                st.error(f"Failed to compute impact: {exc}")
+
+    if st.session_state.upload_rankings is not None:
+        rankings = st.session_state.upload_rankings
+        show_cols = st.session_state.upload_show_cols or []
+
+        st.markdown("### All Players (Match Impact)")
+        st.dataframe(rankings[show_cols], width='stretch', height=420, hide_index=True)
+
+        api_key = get_groq_key()
+        if not api_key:
+            st.warning("Set GROQ_API_KEY in .env to generate explanations.")
+        else:
+            if st.button("Generate top 5 explanations", key="match_explain_btn"):
+                model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+                top_by_team = []
+                for _, grp in rankings.groupby("player_team", dropna=False):
+                    top_by_team.append(grp.sort_values("impact_score", ascending=False).head(5))
+                top_df = pd.concat(top_by_team, ignore_index=True) if top_by_team else rankings.head(10)
+
+                context = {
+                    "match_id": str(rankings["match_id"].iloc[0]) if "match_id" in rankings.columns else "",
+                    "players": top_df[show_cols].fillna("").to_dict(orient="records"),
+                }
+                prompt = (
+                    "You are an IPL analyst. Write simple, professional explanations for the top 5 players from each team. "
+                    "Use short, clear sentences and avoid heavy terms. "
+                    "Output a structured list grouped by team. For each player, give 1-2 sentences "
+                    "explaining why their impact_score is high or low using role, key_stat, and impact_category. "
+                    "Use the numeric context signals in the data to describe pressure, momentum, and phase "
+                    "(powerplay, middle, death) when implied, but do NOT mention terms like WPA or clutch scores. "
+                    "Do not invent facts that are not present.\n\n"
+                    "Output format (must be identical for every player):\n"
+                    "Player | Role | Key Stat | Impact Explanation\n"
+                    "Example: V Kohli | batter | 62 runs (SR 137.8) | Anchored a shaky start and kept the chase steady...\n\n"
+                    + json.dumps(context, ensure_ascii=True)
+                )
+                with st.spinner("Generating explanations with Groq..."):
+                    text, err = groq_generate(prompt, api_key, model=model)
+                if err:
+                    st.error(f"Groq error: {err}")
+                    st.info("Tip: set GROQ_MODEL in .env (e.g., openai/gpt-oss-120b).")
+                else:
+                    table = parse_explanations(text)
+                    if len(table) > 0:
+                        for team_name, team_df in table.groupby("Team", dropna=False):
+                            display_df = team_df.drop(columns=["Team"]).reset_index(drop=True)
+                            display_df.insert(0, "No.", np.arange(1, len(display_df) + 1))
+                            html_table = render_team_table(team_name, display_df)
+                            st.markdown(html_table, unsafe_allow_html=True)
+                    else:
+                        st.markdown(text)
 
