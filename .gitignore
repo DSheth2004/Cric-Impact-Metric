@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Large data files (CSVs in data folder)
+ipl_male_csv2/
+
+# Generated outputs (can be reproduced by running the pipeline)
+cricket_impact/*.csv
+cricket_impact/*.png
+cricket_impact/models/
+
+# Jupyter
+.ipynb_checkpoints/
