@@ -137,15 +137,47 @@ def aggregate_bowler_wpa(ball_df):
 
 
 def compute_clutch_wpa(ball_df):
-    """Compute clutch WPA for batters and bowlers."""
-    clutch_mask = (
-        (ball_df['over'] >= 15) &
+    """Compute clutch WPA for batters and bowlers — format-aware."""
+    # Compute max over per match for dynamic clutch threshold
+    match_max = ball_df.groupby('match_id')['over'].max()
+    ball_df = ball_df.copy()
+    ball_df['_match_total_overs'] = ball_df['match_id'].map(match_max) + 1  # 0-indexed
+    ball_df['_match_total_overs'] = ball_df['_match_total_overs'].fillna(20)
+
+    is_long_match = ball_df['_match_total_overs'] > 50
+
+    # For ≤50 over matches: clutch = last 20% of overs with high pressure
+    clutch_start = np.floor(ball_df['_match_total_overs'] * 0.80).astype(int)
+    standard_clutch_mask = (
+        (~is_long_match) &
+        (ball_df['over'] >= clutch_start) &
         (
             (ball_df['pressure_index'] > 0.6) |
             (ball_df['wickets_remaining'] <= 3) |
             (ball_df['rr_pressure_gap'] > 3)
         )
     )
+
+    # For >50 over matches (Tests): clutch = 10-over windows where a player's
+    # WPA swings drastically (sustained impact), based on rolling WPA magnitude
+    long_clutch_mask = pd.Series(False, index=ball_df.index)
+    if is_long_match.any():
+        long_df = ball_df[is_long_match].copy()
+        # Rolling 60-ball (10 over) WPA sum per batter and bowler
+        long_df = long_df.sort_values(['match_id', 'innings', 'over', 'ball_in_over'])
+        batter_roll = long_df.groupby(['match_id', 'innings', 'striker'])['wpa'].transform(
+            lambda x: x.rolling(60, min_periods=6).sum().abs()
+        ).fillna(0)
+        bowler_roll = long_df.groupby(['match_id', 'innings', 'bowler'])['wpa'].transform(
+            lambda x: x.rolling(60, min_periods=6).sum().abs()
+        ).fillna(0)
+        # Clutch if either batter or bowler rolling WPA exceeds threshold
+        wpa_threshold = 0.15
+        long_clutch_mask.loc[long_df.index] = (
+            (batter_roll > wpa_threshold) | (bowler_roll > wpa_threshold)
+        )
+
+    clutch_mask = standard_clutch_mask | long_clutch_mask
     clutch_df = ball_df[clutch_mask].copy()
 
     # Batter clutch WPA
@@ -160,4 +192,5 @@ def compute_clutch_wpa(ball_df):
         batter_clutch = pd.DataFrame(columns=['match_id', 'innings', 'player', 'clutch_wpa'])
         bowler_clutch = pd.DataFrame(columns=['match_id', 'innings', 'player', 'clutch_wpa'])
 
+    ball_df.drop(columns=['_match_total_overs'], inplace=True, errors='ignore')
     return batter_clutch, bowler_clutch

@@ -135,16 +135,21 @@ def add_ball_level_context(ball_df):
                                  ball_df['innings_1_total'] + 1, 0)
     ball_df['is_chasing'] = (ball_df['innings'] == 2).astype(int)
 
+    # Compute max balls per match from actual overs bowled
+    match_max_over = ball_df.groupby('match_id')['over'].max().reset_index()
+    match_max_over.columns = ['match_id', '_max_over']
+    ball_df = ball_df.merge(match_max_over, on='match_id', how='left')
+    ball_df['_max_over'] = ball_df['_max_over'].fillna(20)
+    ball_df['_total_balls'] = (ball_df['_max_over'] + 1) * 6  # overs are 0-indexed
+
     # Required run rate
     ball_df['runs_needed'] = np.where(
         ball_df['innings'] == 2,
         ball_df['target'] - ball_df['cumulative_runs'],
         0
     )
-    ball_df['balls_remaining'] = np.where(
-        ball_df['innings'] == 2,
-        np.maximum(120 - ball_df['cumulative_balls'], 1),
-        np.maximum(120 - ball_df['cumulative_balls'], 1)
+    ball_df['balls_remaining'] = np.maximum(
+        ball_df['_total_balls'] - ball_df['cumulative_balls'], 1
     )
     ball_df['overs_remaining'] = ball_df['balls_remaining'] / 6.0
     ball_df['required_rr'] = np.where(
@@ -153,6 +158,27 @@ def add_ball_level_context(ball_df):
         0
     )
     ball_df['required_rr'] = ball_df['required_rr'].clip(lower=0)
+
+    # Cap required_rr based on format to avoid distorted pressure
+    fmt = ball_df.get('match_format', pd.Series('T20', index=ball_df.index))
+    is_test = fmt == 'Test'
+    is_odi = fmt == 'ODI'
+    # T20: cap at 15 when > 4 overs remain; ODI: cap at 9 when > 20 overs remain
+    # Test: drop required_rr entirely (most Test innings aren't chasing)
+    ball_df['required_rr'] = np.where(
+        is_test, 0,
+        np.where(
+            is_odi & (ball_df['overs_remaining'] > 20),
+            ball_df['required_rr'].clip(upper=9),
+            np.where(
+                (~is_odi) & (~is_test) & (ball_df['overs_remaining'] > 4),
+                ball_df['required_rr'].clip(upper=15),
+                ball_df['required_rr']
+            )
+        )
+    )
+
+    ball_df.drop(columns=['_max_over', '_total_balls'], inplace=True)
 
     ball_df['wickets_remaining'] = 10 - ball_df['cumulative_wickets']
     ball_df['rr_pressure_gap'] = np.where(
@@ -165,20 +191,34 @@ def add_ball_level_context(ball_df):
 
 
 def add_pressure_index(ball_df):
-    """Compute pressure_index for each ball."""
+    """Compute pressure_index for each ball — format-aware."""
     overs_remaining_inv = np.where(
         ball_df['overs_remaining'] > 0,
         1.0 / ball_df['overs_remaining'],
         1.0
     )
-    # Normalize components
-    rrr_norm = ball_df['required_rr'].clip(0, 36) / 36.0
+
+    fmt = ball_df.get('match_format', pd.Series('T20', index=ball_df.index))
+    is_test = fmt == 'Test'
+    is_odi = fmt == 'ODI'
+
+    # Format-aware required_rr cap for normalization
+    # T20: max meaningful RRR ~15, ODI: ~9, Test: 0 (pressure from wickets)
+    rrr_cap = np.where(is_test, 1, np.where(is_odi, 9, 15)).astype(float)
+    rrr_norm = np.where(rrr_cap > 0,
+                        ball_df['required_rr'].clip(0, rrr_cap) / rrr_cap, 0)
     wick_norm = (10 - ball_df['wickets_remaining']) / 10.0
     ov_inv_norm = np.clip(overs_remaining_inv, 0, 1)
 
-    ball_df['pressure_index'] = (0.4 * rrr_norm + 0.3 * wick_norm + 0.3 * ov_inv_norm)
+    # Test: pressure dominated by wickets (no chase RRR usually)
+    # ODI/T20: standard formula
+    ball_df['pressure_index'] = np.where(
+        is_test,
+        0.6 * wick_norm + 0.4 * ov_inv_norm,
+        0.4 * rrr_norm + 0.3 * wick_norm + 0.3 * ov_inv_norm
+    )
 
-    # For innings 1, use a simpler formula
+    # For innings 1, use a simpler formula (no chase pressure)
     mask_inn1 = ball_df['innings'] == 1
     ball_df.loc[mask_inn1, 'pressure_index'] = (
         0.3 * wick_norm[mask_inn1] + 0.3 * ov_inv_norm[mask_inn1]
@@ -188,13 +228,35 @@ def add_pressure_index(ball_df):
 
 
 def add_clutch_indicator(ball_df):
-    """Add clutch flags and factor."""
-    ball_df['is_clutch'] = (ball_df['over'] >= 15).astype(int)
-    ball_df['clutch_factor'] = np.where(
-        ball_df['over'] >= 15,
-        (ball_df['over'] - 14) / 5.0,  # 0.2 at over 15, 1.0 at over 19
-        0
+    """Add clutch flags and factor — dynamic based on match length."""
+    # Compute max over per match (0-indexed)
+    match_max = ball_df.groupby('match_id')['over'].max().reset_index()
+    match_max.columns = ['match_id', '_match_max_over']
+    ball_df = ball_df.merge(match_max, on='match_id', how='left')
+    ball_df['_match_max_over'] = ball_df['_match_max_over'].fillna(19)
+    total_overs = ball_df['_match_max_over'] + 1  # 0-indexed to count
+
+    # For matches <= 50 overs: clutch starts at last 20% of overs
+    # For matches > 50 overs (Tests): no fixed clutch zone — handled via WPA swing
+    clutch_start = np.floor(total_overs * 0.80).astype(int)
+    is_long_match = total_overs > 50
+
+    # Standard clutch: last 20% of overs, factor ramps 0→1 over that zone
+    clutch_zone_size = np.maximum(total_overs - clutch_start, 1)
+    ball_df['is_clutch'] = np.where(
+        is_long_match, 0,
+        (ball_df['over'] >= clutch_start).astype(int)
     )
+    ball_df['clutch_factor'] = np.where(
+        is_long_match, 0,
+        np.where(
+            ball_df['over'] >= clutch_start,
+            np.clip((ball_df['over'] - clutch_start + 1) / clutch_zone_size, 0, 1),
+            0
+        )
+    )
+
+    ball_df.drop(columns=['_match_max_over'], inplace=True)
     return ball_df
 
 

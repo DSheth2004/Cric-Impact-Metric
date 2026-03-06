@@ -163,11 +163,15 @@ def compute_batter_vs_bowler_rivalry(ball_df):
                                          (rivalry['dismissals'] / rivalry['balls']) * 100, 0)
 
     # Dominance index: higher = batter dominates
-    # Normalize each component
-    sr_norm = rivalry['sr'] / 200.0  # typical T20 SR
+    # Normalize using data-driven caps (95th percentile) instead of fixed T20 constants
+    sr_cap = max(rivalry['sr'].quantile(0.95), 1)
+    boundary_cap = max(rivalry['boundary_pct'].quantile(0.95), 1)
+    dismiss_cap = max(rivalry['dismissal_rate'].quantile(0.95), 1)
+
+    sr_norm = rivalry['sr'] / sr_cap
     dot_norm = 1 - (rivalry['dot_pct'] / 100.0)  # lower dots = batter better
-    boundary_norm = rivalry['boundary_pct'] / 50.0
-    dismiss_norm = 1 - (rivalry['dismissal_rate'] / 20.0)  # lower dismissal = batter better
+    boundary_norm = rivalry['boundary_pct'] / boundary_cap
+    dismiss_norm = 1 - (rivalry['dismissal_rate'] / dismiss_cap)  # lower dismissal = batter better
 
     rivalry['dominance_index'] = (
         0.4 * sr_norm.clip(0, 1) +
