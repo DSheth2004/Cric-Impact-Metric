@@ -39,7 +39,11 @@ FIG_LAYOUT = dict(
     font=dict(family="'Segoe UI', Inter, system-ui, sans-serif", color=TEXT, size=12),
     margin=dict(l=10, r=10, t=45, b=10),
     hoverlabel=dict(bgcolor=SURFACE, font_size=12, font_color=TEXT, bordercolor=BORDER),
+    transition=dict(duration=600, easing="cubic-in-out"),
 )
+PLOTLY_CFG = dict(scrollZoom=False, displayModeBar="hover",
+                  modeBarButtonsToRemove=["lasso2d","select2d"],
+                  displaylogo=False)
 FIG_GRID = dict(
     xaxis=dict(gridcolor="rgba(255,255,255,0.04)", zerolinecolor="rgba(255,255,255,0.06)"),
     yaxis=dict(gridcolor="rgba(255,255,255,0.04)", zerolinecolor="rgba(255,255,255,0.06)"),
@@ -47,6 +51,12 @@ FIG_GRID = dict(
 
 
 # --- Helpers ---
+def clipped_mean(s):
+    """Mean after clipping values outside 1.5*IQR."""
+    q1, q3 = s.quantile(0.25), s.quantile(0.75)
+    iqr = q3 - q1
+    return s.clip(lower=q1 - 1.5 * iqr, upper=q3 + 1.5 * iqr).mean()
+
 @st.cache_data(show_spinner=False)
 def load(p):
     return pd.read_csv(p) if os.path.exists(p) else None
@@ -110,9 +120,9 @@ def build_match_labels(mf):
 
 def kpi_card(label, value, color=CYAN):
     return f"""
-<div style="background:{CARD_BG};backdrop-filter:blur(12px);border:1px solid {BORDER};
+<div class="kpi-card" style="background:{CARD_BG};backdrop-filter:blur(12px);border:1px solid {BORDER};
             border-radius:14px;padding:18px 14px;text-align:center;
-            box-shadow:0 0 20px rgba(0,0,0,0.3);transition:transform .2s;">
+            box-shadow:0 0 20px rgba(0,0,0,0.3);">
   <div style="font-size:0.7rem;color:{TEXT2};letter-spacing:1px;text-transform:uppercase;
               margin-bottom:6px;">{label}</div>
   <div style="font-size:1.6rem;font-weight:700;color:{color};
@@ -139,10 +149,27 @@ st.markdown(f"""
   .block-container {{ padding-top:.8rem; max-width:1380px; }}
   h1,h2,h3,h4 {{ color:{TEXT}; font-family:'Inter',sans-serif; }}
   section[data-testid="stSidebar"] {{
-      background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
+      background: linear-gradient(180deg, #0d1117 0%, #161b22 100%) !important;
       border-right: 1px solid {BORDER};
   }}
   section[data-testid="stSidebar"] * {{ color: {TEXT} !important; }}
+  section[data-testid="stSidebar"] .stSelectbox > div > div,
+  section[data-testid="stSidebar"] .stNumberInput > div > div > input,
+  section[data-testid="stSidebar"] .stSlider label,
+  section[data-testid="stSidebar"] [data-baseweb="select"] {{
+      background-color: {SURFACE} !important;
+      color: {TEXT} !important;
+  }}
+  section[data-testid="stSidebar"] [data-baseweb="select"] * {{ color: {TEXT} !important; }}
+  section[data-testid="stSidebar"] [data-baseweb="input"] {{
+      background-color: {SURFACE} !important;
+      color: {TEXT} !important;
+      border-color: {BORDER} !important;
+  }}
+  section[data-testid="stSidebar"] [data-baseweb="input"] input {{ color: {TEXT} !important; }}
+  section[data-testid="stSidebar"] .stRadio label span {{ color: {TEXT} !important; }}
+  section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {{ color: {TEXT} !important; }}
+  section[data-testid="stSidebar"] button {{ background-color: {SURFACE} !important; color: {TEXT} !important; border-color: {BORDER} !important; }}
   [data-testid="stMetric"] {{
       background:{CARD_BG}; backdrop-filter:blur(12px);
       border:1px solid {BORDER}; border-radius:12px;
@@ -175,6 +202,42 @@ st.markdown(f"""
   .hero p {{ color:{TEXT2}; font-size:0.9rem; margin-top:2px; }}
   .sep {{ border:none; border-top:1px solid {BORDER}; margin:18px 0; }}
   #MainMenu, footer, header {{ visibility:hidden; }}
+
+  /* --- Chart animations --- */
+  @keyframes fadeSlideUp {{
+      from {{ opacity:0; transform:translateY(24px); }}
+      to   {{ opacity:1; transform:translateY(0); }}
+  }}
+  @keyframes gaugeNeedle {{
+      from {{ opacity:0; transform:rotate(-120deg); }}
+      to   {{ opacity:1; transform:rotate(0deg); }}
+  }}
+  [data-testid="stPlotlyChart"] {{
+      animation: fadeSlideUp 0.7s ease-out both;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+  }}
+  [data-testid="stPlotlyChart"]:hover {{
+      transform: scale(1.015);
+      box-shadow: 0 8px 32px rgba(88,166,255,0.15);
+  }}
+  [data-testid="stDataFrame"] {{
+      animation: fadeSlideUp 0.6s ease-out both;
+      transition: transform 0.25s ease;
+  }}
+  [data-testid="stDataFrame"]:hover {{
+      transform: scale(1.008);
+  }}
+  .kpi-card {{
+      animation: fadeSlideUp 0.5s ease-out both;
+      transition: transform 0.25s ease, box-shadow 0.25s ease;
+  }}
+  .kpi-card:hover {{
+      transform: translateY(-4px) scale(1.03);
+      box-shadow: 0 8px 24px rgba(88,166,255,0.2);
+  }}
+  .glass {{
+      animation: fadeSlideUp 0.6s ease-out both;
+  }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -231,13 +294,23 @@ if min_wkts > 0:  pdf = pdf[pdf["total_wickets"]  >= min_wkts]
 
 if role_pick == "Batter":
     pdf = pdf[pdf["role"].isin(["Batter","All-rounder"])].copy()
-    pdf["display_impact"] = pdf["mean_bat_impact"]; imp_label = "Batting Impact"
+    log_vol = np.log1p(pdf["total_balls_faced"]) / np.log1p(pdf["total_balls_faced"].max())
+    raw = pdf["mean_bat_impact"] * log_vol
+    bmax = raw.max() or 1
+    pdf["display_impact"] = raw / bmax * 100; imp_label = "Batting Impact"
 elif role_pick == "Bowler":
     pdf = pdf[pdf["role"].isin(["Bowler","All-rounder"])].copy()
-    pdf["display_impact"] = pdf["mean_bowl_impact"]; imp_label = "Bowling Impact"
+    log_vol = np.log1p(pdf["total_balls_bowled"]) / np.log1p(pdf["total_balls_bowled"].max())
+    raw = pdf["mean_bowl_impact"] * log_vol
+    wmax = raw.max() or 1
+    pdf["display_impact"] = raw / wmax * 100; imp_label = "Bowling Impact"
 elif role_pick == "All-rounder":
     pdf = pdf[pdf["role"]=="All-rounder"].copy()
-    pdf["display_impact"] = pdf["mean_bat_impact"]+pdf["mean_bowl_impact"]; imp_label = "Combined Impact"
+    bvol = np.log1p(pdf["total_balls_faced"]) / np.log1p(pdf["total_balls_faced"].max())
+    wvol = np.log1p(pdf["total_balls_bowled"]) / np.log1p(pdf["total_balls_bowled"].max())
+    raw = pdf["mean_bat_impact"] * bvol + pdf["mean_bowl_impact"] * wvol
+    cmax = raw.max() or 1
+    pdf["display_impact"] = raw / cmax * 100; imp_label = "Combined Impact"
 else:
     if season_mode:
         pdf["display_impact"] = pdf["season_avg_impact"]; imp_label = "Season Avg Impact"
@@ -266,7 +339,7 @@ with tabs[0]:
     top = pdf.iloc[0] if len(pdf) > 0 else None
     cols = st.columns(4)
     with cols[0]: st.markdown(kpi_card("Players", len(pdf), CYAN), unsafe_allow_html=True)
-    with cols[1]: st.markdown(kpi_card(f"Median {imp_label}", f"{pdf['display_impact'].median():.1f}", GOLD), unsafe_allow_html=True)
+    with cols[1]: st.markdown(kpi_card(f"Mean {imp_label}", f"{clipped_mean(pdf['display_impact']):.1f}", GOLD), unsafe_allow_html=True)
     with cols[2]: st.markdown(kpi_card("Top Player", top["player"] if top is not None else "-", GREEN), unsafe_allow_html=True)
     with cols[3]: st.markdown(kpi_card(f"Top {imp_label}", f"{top['display_impact']:.1f}" if top is not None else "-", ORANGE), unsafe_allow_html=True)
 
@@ -301,7 +374,7 @@ with tabs[0]:
                           title=dict(text=f"Top 15 - {imp_label}{season_tag}", font=dict(size=15, color=TEXT)),
                           xaxis_title=imp_label)
         fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.04)")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
     # Distribution
     with c2:
@@ -310,13 +383,13 @@ with tabs[0]:
             marker=dict(color=CYAN, line=dict(width=0.5, color="rgba(255,255,255,0.1)")),
             opacity=0.85,
         ))
-        med = pdf["display_impact"].median()
-        fig.add_vline(x=med, line_dash="dash", line_color=GOLD, line_width=2,
-                      annotation_text=f"Median: {med:.1f}", annotation_font_color=GOLD)
+        cmean = clipped_mean(pdf["display_impact"])
+        fig.add_vline(x=cmean, line_dash="dash", line_color=GOLD, line_width=2,
+                      annotation_text=f"Mean: {cmean:.1f}", annotation_font_color=GOLD)
         fig.update_layout(**FIG_LAYOUT, **FIG_GRID, height=420,
                           title=dict(text=f"{imp_label} Distribution{season_tag}", font=dict(size=15, color=TEXT)),
                           xaxis_title=imp_label, yaxis_title="Players", bargap=0.08)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
     c3, c4 = st.columns(2)
     # Role pie
@@ -334,7 +407,7 @@ with tabs[0]:
                           title=dict(text="Role Distribution", font=dict(size=15, color=TEXT)),
                           showlegend=True,
                           legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT2)))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
     # Bat vs Bowl scatter
     with c4:
@@ -349,7 +422,7 @@ with tabs[0]:
                               title=dict(text="Batting vs Bowling Impact", font=dict(size=15, color=TEXT)),
                               xaxis_title="Batting Impact", yaxis_title="Bowling Impact",
                               coloraxis_colorbar=dict(title=imp_label, tickfont=dict(color=TEXT2)))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
     st.markdown('<hr class="sep">', unsafe_allow_html=True)
     st.markdown("#### Leaderboards")
@@ -368,7 +441,7 @@ with tabs[0]:
         fig.update_layout(**FIG_LAYOUT, height=360,
                           title=dict(text="Top 10 Batters", font=dict(size=14, color=TEXT)))
         fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
     with c6:
         tw = pdf[pdf["bowl_innings"] >= 20].nlargest(10, "mean_bowl_impact")
@@ -383,7 +456,7 @@ with tabs[0]:
         fig.update_layout(**FIG_LAYOUT, height=360,
                           title=dict(text="Top 10 Bowlers", font=dict(size=14, color=TEXT)))
         fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
     # Full table
     with st.expander("Full Player Table"):
@@ -443,6 +516,7 @@ with tabs[1]:
 
         with g_col:
             score = prof_impact
+            ref_mean = clipped_mean(pdf["overall_impact"])
             if score >= 80:   g_color = GREEN
             elif score >= 60: g_color = GOLD
             elif score >= 40: g_color = ORANGE
@@ -450,7 +524,7 @@ with tabs[1]:
 
             fig = go.Figure(go.Indicator(
                 mode="gauge+number+delta", value=score,
-                delta=dict(reference=pdf["overall_impact"].median(), valueformat=".1f",
+                delta=dict(reference=ref_mean, valueformat=".1f",
                            increasing=dict(color=GREEN), decreasing=dict(color=RED)),
                 number=dict(font=dict(size=42, color=g_color)),
                 gauge=dict(
@@ -471,7 +545,7 @@ with tabs[1]:
             gauge_layout = {k: v for k, v in FIG_LAYOUT.items() if k != "margin"}
             fig.update_layout(**gauge_layout, height=280,
                               margin=dict(l=30, r=30, t=60, b=20))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
         with bat_col:
             st.markdown(f"<h4 style='color:{ORANGE};margin-bottom:8px;'>Batting</h4>", unsafe_allow_html=True)
@@ -521,7 +595,7 @@ with tabs[1]:
                                          angularaxis=dict(tickfont=dict(size=11, color=TEXT),
                                                           gridcolor="rgba(255,255,255,0.06)")),
                               title=dict(text="Strength Radar", font=dict(size=14, color=TEXT)))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
         with t_col:
             trend = get_trend(sel, bat_df, bwl_df,
@@ -549,7 +623,7 @@ with tabs[1]:
                                   showlegend=True,
                                   legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT2),
                                               orientation="h", y=1.08))
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
             else:
                 st.info("Not enough innings for a trend chart.")
 
@@ -623,7 +697,7 @@ with tabs[2]:
                                          gridcolor="rgba(255,255,255,0.04)"),
                               legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT2),
                                           orientation="h", y=1.08))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
         st.markdown('<hr class="sep">', unsafe_allow_html=True)
 
@@ -655,7 +729,7 @@ with tabs[2]:
                               title=dict(text="Radar Comparison", font=dict(size=14, color=TEXT)),
                               legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT2),
                                           orientation="h", y=-0.08))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
         with tt_col:
             ta = get_trend(pa, bat_df, bwl_df)
@@ -679,7 +753,7 @@ with tabs[2]:
                                   xaxis_title="Date", yaxis_title="Impact Score",
                                   legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT2),
                                               orientation="h", y=1.08))
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
             else:
                 st.info("Not enough innings data for both players.")
 
@@ -764,7 +838,7 @@ with tabs[3]:
                               title=dict(text="Top Performers", font=dict(size=14, color=TEXT)),
                               xaxis_title="Performance Score")
             fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config=PLOTLY_CFG)
 
             show_c = [c for c in ["player","role","player_team","key_stat",
                                   "performance_score","impact_score","impact_category",
