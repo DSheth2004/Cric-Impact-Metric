@@ -5,7 +5,11 @@ Designed for IPL-style Cricsheet files (e.g., 335982.csv, 335982_info.csv).
 
 import os
 import re
+import warnings
 import pandas as pd
+
+pd.set_option('future.no_silent_downcasting', True)
+warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
 
 from cricket_impact.data_loader import clean_data
 from cricket_impact.player_aggregation import (
@@ -288,9 +292,9 @@ def compute_match_rankings_from_files(ball_path, info_path, model_dir=None):
     ]
     for c in wpa_fill_cols:
         if c in bat_df.columns:
-            bat_df[c] = bat_df[c].fillna(0)
+            bat_df[c] = bat_df[c].fillna(0).infer_objects(copy=False)
         if c in bowl_df.columns:
-            bowl_df[c] = bowl_df[c].fillna(0)
+            bowl_df[c] = bowl_df[c].fillna(0).infer_objects(copy=False)
 
     if "match_format" not in bat_df.columns:
         bat_df["match_format"] = "T20"

@@ -4,6 +4,7 @@ Train XGBoost model to predict P(batting_team_wins) at any ball.
 """
 
 import os
+import warnings
 import numpy as np
 import pandas as pd
 import joblib
@@ -175,7 +176,9 @@ def load_model(model_dir=None):
         model_dir = MODEL_DIR
     model_path = os.path.join(model_dir, 'win_prob_model.pkl')
     if os.path.exists(model_path):
-        return joblib.load(model_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=UserWarning)
+            return joblib.load(model_path)
     return None
 
 
