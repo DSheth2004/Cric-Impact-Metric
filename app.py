@@ -6,6 +6,7 @@ import os
 import json
 import tempfile
 import html as html_lib
+from urllib import request, error
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -134,8 +135,8 @@ def stat_row(label, value, color=CYAN):
 </div>"""
 
 
-def get_groq_key():
-    key = os.getenv("GROQ_API_KEY")
+def get_gemini_key():
+    key = os.getenv("GEMINI_API_KEY")
     if key:
         return key
     try:
@@ -144,33 +145,36 @@ def get_groq_key():
         load_dotenv()
     except Exception:
         return None
-    return os.getenv("GROQ_API_KEY")
+    return os.getenv("GEMINI_API_KEY")
 
 
-def groq_generate(prompt, api_key, model=None):
+def gemini_generate(prompt, api_key, model=None):
     if model is None:
-        model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-    try:
-        from groq import Groq
-    except Exception as exc:
-        return None, f"Missing dependency 'groq': {exc}"
+        model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1200},
+    }
+
+    req = request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
     try:
-        client = Groq(api_key=api_key)
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are an IPL analyst."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.4,
-            max_completion_tokens=1200,
-            top_p=1,
-            stream=False,
-        )
-        return completion.choices[0].message.content, None
+        with request.urlopen(req, timeout=40) as resp:
+            data = json.load(resp)
+    except error.HTTPError as exc:
+        return None, exc.read().decode("utf-8")
     except Exception as exc:
         return None, str(exc)
+
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"], None
+    except Exception:
+        return json.dumps(data), None
 
 
 def parse_explanations(text):
@@ -915,12 +919,12 @@ with tabs[4]:
         st.markdown("### All Players (Match Impact)")
         st.dataframe(rankings[show_cols], width='stretch', height=420, hide_index=True)
 
-        api_key = get_groq_key()
+        api_key = get_gemini_key()
         if not api_key:
-            st.warning("Set GROQ_API_KEY in .env to generate explanations.")
+            st.warning("Set GEMINI_API_KEY in .env to generate explanations.")
         else:
             if st.button("Generate top 5 explanations", key="match_explain_btn"):
-                model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+                model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
                 top_by_team = []
                 for _, grp in rankings.groupby("player_team", dropna=False):
                     top_by_team.append(grp.sort_values("impact_score", ascending=False).head(5))
@@ -943,11 +947,11 @@ with tabs[4]:
                     "Example: V Kohli | batter | 62 runs (SR 137.8) | Anchored a shaky start and kept the chase steady...\n\n"
                     + json.dumps(context, ensure_ascii=True)
                 )
-                with st.spinner("Generating explanations with Groq..."):
-                    text, err = groq_generate(prompt, api_key, model=model)
+                with st.spinner("Generating explanations with Gemini..."):
+                    text, err = gemini_generate(prompt, api_key, model=model)
                 if err:
-                    st.error(f"Groq error: {err}")
-                    st.info("Tip: set GROQ_MODEL in .env (e.g., openai/gpt-oss-120b).")
+                    st.error(f"Gemini error: {err}")
+                    st.info("Tip: set GEMINI_MODEL in .env (e.g., gemini-2.0-flash).")
                 else:
                     table = parse_explanations(text)
                     if len(table) > 0:
