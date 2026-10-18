@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
+import { Cell, Pie, PieChart, ResponsiveContainer, Sector } from 'recharts'
 import { usePalette } from '../lib/theme'
 import { num } from '../lib/format'
 import type { Row } from '../lib/api'
@@ -12,9 +12,10 @@ export function ChartCard({ title, sub, children, table, className = '', delay =
   const [showTable, setShowTable] = useState(false)
   return (
     <motion.section
-      className={`card ${className}`}
+      className={`card lift ${className}`}
       initial={{ opacity: 0, y: 14 }}
       whileInView={{ opacity: 1, y: 0 }}
+      whileHover={HOVER_LIFT}
       viewport={{ once: true, margin: '-40px' }}
       transition={{ duration: 0.45, delay }}
     >
@@ -52,13 +53,17 @@ export function DataTable({ rows, max = 50 }: { rows: Row[]; max?: number }) {
   )
 }
 
+/** Shared hover: the card rises and grows a little so its numbers come forward. */
+// eslint-disable-next-line react-refresh/only-export-components
+export const HOVER_LIFT = { y: -5, scale: 1.015, transition: { type: 'spring' as const, stiffness: 320, damping: 24 } }
+
 export function Kpi({ label, value, hint, color }: { label: string; value: ReactNode; hint?: ReactNode; color?: string }) {
   return (
-    <div className="card kpi">
+    <motion.div className="card kpi lift" whileHover={{ y: -4, scale: 1.04, transition: HOVER_LIFT.transition }}>
       <div className="kpi-label">{color && <span className="kpi-dot" style={{ background: color }} />}{label}</div>
       <div className="kpi-value">{value}</div>
       {hint && <div className="kpi-hint">{hint}</div>}
-    </div>
+    </motion.div>
   )
 }
 
@@ -115,6 +120,7 @@ export function Donut({ data, order, size = 170, centerLabel, fmt = (v: number) 
   data: Slice[]; order?: string[]; size?: number; centerLabel?: string; fmt?: (v: number) => string; colors?: string[]
 }) {
   const pal = usePalette()
+  const [active, setActive] = useState<number | null>(null)
   const rows = useMemo(() => {
     // colour follows the slice's identity (its position in `order`, else in the input), never its rank
     const ord = order ?? (data || []).map(d => d.name)
@@ -133,24 +139,34 @@ export function Donut({ data, order, size = 170, centerLabel, fmt = (v: number) 
       <div style={{ width: size, height: size, position: 'relative', flex: 'none', margin: '0 auto' }}>
         <ResponsiveContainer>
           <PieChart>
-            <Pie data={rows} dataKey="value" nameKey="name" innerRadius="62%" outerRadius="100%"
+            <Pie data={rows} dataKey="value" nameKey="name" innerRadius="58%" outerRadius="90%"
               stroke={pal.surface} strokeWidth={2} startAngle={90} endAngle={-270}
-              animationDuration={900} isAnimationActive>
-              {rows.map(r => <Cell key={r.name} fill={r.fill} />)}
+              animationDuration={900} isAnimationActive
+              activeIndex={active ?? undefined} activeShape={PopSlice}
+              onMouseEnter={(_, i) => setActive(i)} onMouseLeave={() => setActive(null)}>
+              {rows.map((r, i) => <Cell key={r.name} fill={r.fill} opacity={active === null || active === i ? 1 : 0.45} style={{ transition: 'opacity 0.2s' }} />)}
             </Pie>
-            <Tooltip content={<TT fmt={(v: number) => `${fmt(v)} (${((v / total) * 100).toFixed(1)}%)`} />} />
           </PieChart>
         </ResponsiveContainer>
         <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none', textAlign: 'center' }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: size > 150 ? '1.25rem' : '1rem' }}>{fmt(total)}</div>
-            {centerLabel && <div style={{ fontSize: '0.72rem', color: pal.muted }}>{centerLabel}</div>}
-          </div>
+          {active !== null && rows[active] ? (
+            <div className="donut-focus" key={rows[active].name}>
+              <div style={{ fontWeight: 850, fontSize: size > 150 ? '1.35rem' : '1.05rem' }}>{((rows[active].value / total) * 100).toFixed(1)}%</div>
+              <div style={{ fontSize: '0.74rem', fontWeight: 700 }}>{fmt(rows[active].value)}</div>
+              <div style={{ fontSize: '0.68rem', color: pal.muted, maxWidth: size * 0.5 }}>{rows[active].name}</div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontWeight: 800, fontSize: size > 150 ? '1.25rem' : '1rem' }}>{fmt(total)}</div>
+              {centerLabel && <div style={{ fontSize: '0.72rem', color: pal.muted }}>{centerLabel}</div>}
+            </div>
+          )}
         </div>
       </div>
       <div className="legend">
-        {rows.map(r => (
-          <div className="legend-row" key={r.name}>
+        {rows.map((r, i) => (
+          <div className={`legend-row hoverable ${active === i ? 'on' : ''}`} key={r.name}
+            onMouseEnter={() => setActive(i)} onMouseLeave={() => setActive(null)}>
             <span className="legend-sw" style={{ background: r.fill }} />
             <span className="legend-name">{r.name}</span>
             <span className="legend-val">{fmt(r.value)}</span>
@@ -159,6 +175,19 @@ export function Donut({ data, order, size = 170, centerLabel, fmt = (v: number) 
         ))}
       </div>
     </div>
+  )
+}
+// the hovered slice pops outward
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function PopSlice(props: any) {
+  const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill } = props
+  return (
+    <g>
+      <Sector cx={cx} cy={cy} innerRadius={innerRadius - 2} outerRadius={outerRadius + 9}
+        startAngle={startAngle} endAngle={endAngle} fill={fill} />
+      <Sector cx={cx} cy={cy} innerRadius={outerRadius + 11} outerRadius={outerRadius + 13}
+        startAngle={startAngle} endAngle={endAngle} fill={fill} opacity={0.5} />
+    </g>
   )
 }
 const idx = (order: string[], n: string) => { const i = order.indexOf(n); return i < 0 ? order.length : i }

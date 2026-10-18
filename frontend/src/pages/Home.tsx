@@ -7,7 +7,7 @@ import {
   Scatter, ScatterChart, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import WinProbReplay from '../components/WinProbReplay'
-import { ChartCard, CountUp, Donut, ErrorBox, Loading, TT } from '../components/ui'
+import { ChartCard, CountUp, Donut, ErrorBox, HOVER_LIFT, Loading, TT } from '../components/ui'
 import { prefetch, useApi, type Row } from '../lib/api'
 import { CATEGORY_ORDER, ROLE_ORDER, usePalette } from '../lib/theme'
 import { abbr, compact, num, pct, short } from '../lib/format'
@@ -98,8 +98,8 @@ export default function Home() {
         ].map(([Icon, h, d], i) => {
           const I = Icon as typeof Database
           return (
-            <motion.div key={h as string} className="card step" initial={{ opacity: 0, y: 12 }} whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }} transition={{ delay: i * 0.08 }}>
+            <motion.div key={h as string} className="card step lift" initial={{ opacity: 0, y: 12 }} whileInView={{ opacity: 1, y: 0 }}
+              whileHover={HOVER_LIFT} viewport={{ once: true }} transition={{ delay: i * 0.08 }}>
               <div className="step-n"><I size={16} /></div>
               <h3><span className="step-k">{i + 1}</span>{h as string}</h3>
               <p>{d as string}</p>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pause, Play, SkipBack, SkipForward } from 'lucide-react'
 import { useApi, type Row } from '../lib/api'
+import { usePalette } from '../lib/theme'
 import { abbr, num } from '../lib/format'
 
 /**
@@ -15,11 +16,16 @@ const DURATION = 14000 // ms for a full replay at 1x
 const SPEEDS = [0.5, 1, 2, 4]
 
 type Theme = { team1: string; team2: string; ink: string; muted: string; grid: string; surface: string }
-const DARK: Theme = { team1: '#3987e5', team2: '#d95926', ink: '#f0efec', muted: '#9a988f', grid: 'rgba(255,255,255,0.08)', surface: '#0f1512' }
 
-export default function WinProbReplay({ matchId, autoplay = true, theme = DARK, compact = false }: {
+export default function WinProbReplay({ matchId, autoplay = true, theme: themeProp, compact = false }: {
   matchId: number; autoplay?: boolean; theme?: Theme; compact?: boolean
 }) {
+  // follow the site theme: team colours are the first two categorical slots, chrome from the palette
+  const pal = usePalette()
+  const theme: Theme = themeProp ?? {
+    team1: pal.series[0], team2: pal.series[1], ink: pal.ink, muted: pal.muted, grid: pal.grid,
+    surface: pal.mode === 'dark' ? '#0f1512' : '#ffffff',
+  }
   const { data, error } = useApi<Row>(`/matches/${matchId}/worm`)
   const [prog, setProg] = useState(autoplay ? 0 : 1)
   const [playing, setPlaying] = useState(autoplay)
