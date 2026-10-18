@@ -10,6 +10,7 @@ import argparse
 import warnings
 import pandas as pd
 import numpy as np
+import json
 
 warnings.filterwarnings('ignore')
 
@@ -22,7 +23,8 @@ from cricket_impact.player_aggregation import (
     get_innings_totals, merge_runs_contribution
 )
 from cricket_impact.context_features import add_all_context_features
-from cricket_impact.win_prob_model import train_model, load_model, predict_win_prob, FEATURES
+from cricket_impact.win_prob_model import cross_fit_win_prob, FEATURES
+from cricket_impact.rating import build_player_match_context, rate, summarize, estimate_shrink_k, replacement_level, center, discipline_means
 from cricket_impact.wpa_engine import (
     compute_per_ball_wpa, aggregate_batter_wpa, compute_batter_presence_impact,
     aggregate_bowler_wpa, compute_clutch_wpa
@@ -105,7 +107,7 @@ def build_match_rankings(bat_impact, bowl_impact):
 
 
 def build_all_players_summary(bat_impact, bowl_impact, info_df, ball_df=None,
-                               match_format=None):
+                               match_format=None, ctx=None):
     """Build career summary: one row per player, optionally filtered by format."""
     # ── Filter inputs to this format if specified ──
     if match_format:
@@ -245,202 +247,33 @@ def build_all_players_summary(bat_impact, bowl_impact, info_df, ball_df=None,
         all_players['playoff_seasons'] = 0
     all_players['playoff_seasons'] = all_players['playoff_seasons'].fillna(0)
 
-    # ── Batting-specific rating (for "batters with 50+ innings" validation) ──
-    bat_mask = all_players['bat_innings'] >= 5
-    bat_rated = all_players[bat_mask].copy()
-    if len(bat_rated) > 0:
-        br_runs = np.log1p(bat_rated['total_runs'])
-        br_runs_norm = br_runs / br_runs.max() if br_runs.max() > 0 else 0
-
-        br_impact = bat_rated['mean_bat_impact']
-        br_impact_pct = br_impact.rank(pct=True)
-
-        br_wpa = bat_rated['total_bat_wpa']
-        br_wpa_pct = br_wpa.rank(pct=True)
-
-        br_avg = bat_rated['true_bat_avg'].clip(0, 100)
-        br_avg_norm = br_avg / 100.0
-
-        br_sr = bat_rated['avg_bat_sr'].clip(0, 250)
-        br_sr_norm = br_sr / 250.0
-
-        br_not_out = bat_rated['not_out_pct'].clip(0, 1)
-
-        br_longevity = np.log1p(bat_rated['bat_innings']) / np.log1p(bat_rated['bat_innings'].max()) if bat_rated['bat_innings'].max() > 0 else 0
-
-        br_pom = bat_rated['pom_awards'] / bat_rated['pom_awards'].max() if bat_rated['pom_awards'].max() > 0 else 0
-
-        br_pom_rate = np.where(
-            bat_rated['bat_matches'] > 0,
-            bat_rated['pom_awards'] / bat_rated['bat_matches'], 0
-        )
-        br_pom_rate_norm = br_pom_rate / br_pom_rate.max() if br_pom_rate.max() > 0 else 0
-
-        br_max = bat_rated['max_bat_impact']
-        br_max_pct = br_max.rank(pct=True)
-
-        bat_rated['batting_rating_raw'] = (
-            0.20 * br_impact_pct.values +
-            0.15 * br_wpa_pct.values +
-            0.12 * br_runs_norm.values +
-            0.10 * br_avg_norm.values +
-            0.07 * br_sr_norm.values +
-            0.08 * br_not_out.values +
-            0.10 * br_longevity +
-            0.06 * br_pom +
-            0.07 * br_pom_rate_norm +
-            0.05 * br_max_pct.values
-        )
-
-        bayes_w_bat = bat_rated['bat_innings'] / (bat_rated['bat_innings'] + 10)
-        prior_bat = bat_rated['batting_rating_raw'].median()
-        bat_rated['batting_rating'] = bayes_w_bat * bat_rated['batting_rating_raw'] + (1 - bayes_w_bat) * prior_bat
-        bat_rated['batting_rating'] = bat_rated['batting_rating'].rank(pct=True) * 100
-
-        all_players = all_players.merge(
-            bat_rated[['player', 'batting_rating']],
-            on='player', how='left'
-        )
-    if 'batting_rating' not in all_players.columns:
-        all_players['batting_rating'] = 0
-    all_players['batting_rating'] = all_players['batting_rating'].fillna(0)
-
-    # ── Overall Impact: balanced multi-factor scoring ──
-    total_innings = all_players['bat_innings'] + all_players['bowl_innings']
-    all_players['total_innings'] = total_innings
-
-    # --- Component 1: Batting contribution score ---
-    bat_contrib = np.zeros(len(all_players))
-    bat_mask_any = all_players['bat_innings'] > 0
-    if bat_mask_any.any():
-        # Runs (log-scaled)
-        runs_log = np.log1p(all_players['total_runs'])
-        runs_norm = runs_log / runs_log.max() if runs_log.max() > 0 else 0
-        # Batting average
-        avg_norm = all_players['true_bat_avg'].clip(0, 80) / 80.0
-        # Strike rate
-        sr_norm = all_players['avg_bat_sr'].clip(0, 200) / 200.0
-        # Batting WPA
-        bat_wpa_pct = pd.Series(all_players['total_bat_wpa']).rank(pct=True).values
-        # Batting impact
-        bat_imp_pct = pd.Series(all_players['mean_bat_impact']).rank(pct=True).values
-
-        bat_contrib = (
-            0.30 * runs_norm +
-            0.20 * avg_norm +
-            0.15 * sr_norm +
-            0.20 * bat_wpa_pct +
-            0.15 * bat_imp_pct
-        )
-        bat_contrib = np.where(bat_mask_any, bat_contrib, 0)
-
-    # --- Component 2: Bowling contribution score ---
-    bowl_contrib = np.zeros(len(all_players))
-    bowl_mask_any = all_players['bowl_innings'] > 0
-    if bowl_mask_any.any():
-        # Wickets (log-scaled)
-        wkts_log = np.log1p(all_players['total_wickets'])
-        wkts_norm = wkts_log / wkts_log.max() if wkts_log.max() > 0 else 0
-        # Economy (inverted — lower is better)
-        econ = all_players['avg_economy'].clip(4, 14)
-        econ_norm = 1 - ((econ - 4) / 10.0)
-        econ_norm = np.where(bowl_mask_any, econ_norm, 0)
-        # Bowling WPA
-        bowl_wpa_pct = pd.Series(all_players['total_bowl_wpa']).rank(pct=True).values
-        # Bowling impact
-        bowl_imp_pct = pd.Series(all_players['mean_bowl_impact']).rank(pct=True).values
-        # Phase difficulty: death/powerplay bowling contribution
-        phase_diff = all_players.get('avg_phase_difficulty', pd.Series(0, index=all_players.index)).fillna(0)
-        phase_diff_pct = pd.Series(phase_diff).rank(pct=True).values
-
-        bowl_contrib = (
-            0.22 * wkts_norm +
-            0.15 * econ_norm +
-            0.22 * bowl_wpa_pct +
-            0.21 * bowl_imp_pct +
-            0.20 * phase_diff_pct    # death/powerplay phase difficulty
-        )
-        bowl_contrib = np.where(bowl_mask_any, bowl_contrib, 0)
-
-    # --- Component 3: All-rounder bonus ---
-    # Players who genuinely contribute in both departments
-    is_allrounder = (all_players['bat_innings'] >= 20) & (all_players['bowl_innings'] >= 20)
-    allrounder_bonus = np.zeros(len(all_players))
-    if is_allrounder.any():
-        # Dual contribution: geometric mean of batting and bowling contrib
-        dual = np.sqrt(np.maximum(bat_contrib, 0) * np.maximum(bowl_contrib, 0))
-        allrounder_bonus = np.where(is_allrounder, dual, 0)
-
-    # --- Component 4: Longevity ---
-    total_matches = np.maximum(
-        all_players['bat_matches'].fillna(0),
-        all_players['bowl_matches'].fillna(0)
-    )
-    longevity = np.log1p(total_matches)
-    longevity_norm = longevity / longevity.max() if longevity.max() > 0 else 0
-
-    # --- Component 5: POM awards ---
-    pom_norm = all_players['pom_awards'] / all_players['pom_awards'].max() if all_players['pom_awards'].max() > 0 else 0
-
-    # POM rate (awards per match — rewards efficiency)
-    pom_rate = np.where(total_matches > 0, all_players['pom_awards'] / total_matches, 0)
-    pom_rate_norm = pom_rate / pom_rate.max() if pom_rate.max() > 0 else 0
-
-    # --- Component 6: Clutch contribution ---
-    total_clutch = all_players.get('total_clutch_bat', pd.Series(0, index=all_players.index)).fillna(0).abs() + \
-                   all_players.get('total_clutch_bowl', pd.Series(0, index=all_players.index)).fillna(0).abs()
-    clutch_pct = pd.Series(total_clutch).rank(pct=True).values
-
-    # --- Weighted role-based contribution ---
-    # Weight batting vs bowling by relative innings (so pure batters use batting, pure bowlers use bowling)
-    bat_weight = np.where(total_innings > 0, all_players['bat_innings'] / total_innings, 0.5)
-    bowl_weight = np.where(total_innings > 0, all_players['bowl_innings'] / total_innings, 0.5)
-
-    role_score = bat_weight * bat_contrib + bowl_weight * bowl_contrib
-
-    # --- Component 7: Win bonus (for all players, not just captains) ---
-    win_bonus = all_players['win_bonus_norm'].values
-
-    # --- Component 8: Captaincy bonus (only for captains, 0 for non-captains) ---
-    captaincy_bonus = all_players['captaincy_score_norm'].values
-
-    # --- Component 9: Playoff seasons bonus (for all players on playoff teams) ---
-    playoff_raw = all_players['playoff_seasons']
-    playoff_norm = playoff_raw / playoff_raw.max() if playoff_raw.max() > 0 else 0
-
-    # --- Final composite ---
-    all_players['overall_impact_raw'] = (
-        0.28 * role_score +              # Core performance (role-weighted)
-        0.10 * allrounder_bonus +         # All-rounder dual contribution
-        0.12 * longevity_norm +           # Career longevity / consistency
-        0.10 * pom_norm +                 # Match-winning ability
-        0.06 * pom_rate_norm +            # Match-winning efficiency
-        0.06 * clutch_pct +              # Clutch performance
-        0.07 * np.where(bat_mask_any, runs_norm, wkts_norm) +  # Volume
-        0.08 * win_bonus +               # Winning team bonus (all players)
-        0.05 * captaincy_bonus +          # Captain-only bonus (0 for non-captains)
-        0.04 * playoff_norm +             # Playoff team bonus
-        0.04 * np.maximum(              # Bowling visibility boost
-            pd.Series(all_players['mean_bowl_impact']).rank(pct=True).fillna(0).values
-            * np.where(bowl_mask_any, 1, 0), 0)
-    )
-
-    # Bayesian dampening — sample size correction
-    min_innings = 12
-    bayes_w = total_innings / (total_innings + min_innings)
-    prior = all_players['overall_impact_raw'].median() if len(all_players) > 0 else 0.35
-    all_players['overall_impact_dampened'] = bayes_w * all_players['overall_impact_raw'] + (1 - bayes_w) * prior
-
-    # Scale to 0-90 with spread — logistic curve so gauge meter displays well
-    # Median player = 45, top player ≈ 88-90, bottom ≈ 2-5
-    if len(all_players) > 1:
-        pctile = all_players['overall_impact_dampened'].rank(pct=True)
-        # Use power curve for better spread: score = 90 * pctile^0.7
-        # This gives top=90, median≈55, bottom near 0
-        all_players['overall_impact'] = 90.0 * (pctile ** 0.7)
-    else:
-        all_players['overall_impact'] = 45.0
-
+    # ── v2 rating: Win Probability Added, shrunk, blended, plus a capped bonus ──
+    # (see cricket_impact/rating.py). Strike rate and economy come from career totals.
+    all_players['avg_bat_sr'] = np.where(all_players['total_balls_faced'] > 0,
+                                         all_players['total_runs'] / all_players['total_balls_faced'] * 100, 0)
+    all_players['avg_economy'] = np.where(all_players['total_balls_bowled'] > 0,
+                                          all_players['total_runs_conceded'] / (all_players['total_balls_bowled'] / 6), 0)
+    all_players['total_innings'] = all_players['bat_innings'] + all_players['bowl_innings']
+    for c in ['overall_impact', 'batting_rating', 'bowling_rating', 'impact_per_match',
+              'impact_per_match_shrunk', 'impact_total', 'rating_bonus']:
+        all_players[c] = 0.0
+    if ctx is not None and len(ctx):
+        c = ctx[ctx['match_id'].isin(set(bat_impact['match_id']) | set(bowl_impact['match_id']))]
+        c = center(c)  # batting vs average batting innings, bowling vs average spell
+        summary = summarize(c)
+        k = estimate_shrink_k(c)
+        print(f"  Shrinkage strength (empirical Bayes): K = {k:.0f} matches")
+        r_all = rate(c, 'all', players=summary, shrink_k=k)
+        r_bat = rate(c, 'bat', players=summary, shrink_k=k)
+        r_bowl = rate(c, 'bowl', players=summary, shrink_k=k)
+        idx = all_players['player']
+        all_players['overall_impact'] = idx.map(r_all['rating']).fillna(0).values
+        all_players['impact_per_match'] = idx.map(r_all['impact_per_inn']).fillna(0).values
+        all_players['impact_per_match_shrunk'] = idx.map(r_all['impact_per_inn_shrunk']).fillna(0).values
+        all_players['impact_total'] = idx.map(r_all['impact_total']).fillna(0).values
+        all_players['rating_bonus'] = idx.map(r_all['bonus']).fillna(0).values
+        all_players['batting_rating'] = idx.map(r_bat['rating']).fillna(0).values
+        all_players['bowling_rating'] = idx.map(r_bowl['rating']).fillna(0).values
     all_players = all_players.sort_values('overall_impact', ascending=False).reset_index(drop=True)
 
     return all_players
@@ -483,30 +316,18 @@ def run_pipeline(data_folder, retrain=False, output_dir='cricket_impact'):
 
     # ── Step 5: Train or load ML model ──
     print("\n" + "=" * 60)
-    print("STEP 5: ML Win Probability Model")
+    print("STEP 5: Win probability model (5-fold cross-fitted, monotonic)")
     print("=" * 60)
-    model = None
-    if not retrain:
-        model = load_model(model_dir)
-        if model is not None:
-            print("  Loaded saved model")
-
-    if model is None:
-        print("  Training new model...")
-        model, metrics = train_model(ball_df, info_df, model_dir)
-
-    # ── Step 6: Predict win_prob ──
-    print("\n" + "=" * 60)
-    print("STEP 6: Predicting win probabilities")
-    print("=" * 60)
-    ball_df = predict_win_prob(ball_df, model)
+    # Every match is scored by a model that never saw its result. The `retrain`
+    # flag is kept for compatibility; the model is always refit (it takes seconds).
+    ball_df, model_metrics = cross_fit_win_prob(ball_df, info_df, n_splits=5, model_dir=model_dir)
     print(f"  Win prob range: [{ball_df['win_prob'].min():.3f}, {ball_df['win_prob'].max():.3f}]")
 
     # ── Step 7: WPA ──
     print("\n" + "=" * 60)
     print("STEP 7: Computing WPA")
     print("=" * 60)
-    ball_df = compute_per_ball_wpa(ball_df)
+    ball_df = compute_per_ball_wpa(ball_df, info_df)  # full-match crediting incl. innings break
     print(f"  Per-ball WPA computed")
 
     batter_wpa = aggregate_batter_wpa(ball_df)
@@ -651,6 +472,41 @@ def run_pipeline(data_folder, retrain=False, output_dir='cricket_impact'):
     match_rankings.to_csv(os.path.join(output_dir, 'match_rankings.csv'), index=False)
     print(f"  Match rankings: {len(match_rankings):,} rows")
 
+    # ── Step 13b: player-match context (drives every leaderboard view) ──
+    captains = build_captaincy_data(info_df, ball_df)
+    ctx = build_player_match_context(ball_df, info_df, bat_impact, bowl_impact, captains)
+    ctx.to_csv(os.path.join(output_dir, 'player_match_context.csv'), index=False)
+    print(f"  Player-match context: {len(ctx):,} rows")
+
+    # ── Step 13c: ball-by-ball win probability + model card (for replays) ──
+    keep = ['match_id', 'innings', 'over', 'ball_in_over', 'batting_team', 'bowling_team',
+            'striker', 'non_striker', 'bowler', 'runs_off_bat', 'extras', 'total_runs',
+            'is_wicket', 'player_dismissed', 'wicket_type', 'cumulative_runs',
+            'cumulative_wickets', 'target', 'win_prob', 'wpa']
+    bw = ball_df[[c for c in keep if c in ball_df.columns]].copy()
+    bw['win_prob'] = bw['win_prob'].round(4)
+    bw['wpa'] = bw['wpa'].round(4)
+    bw.to_csv(os.path.join(output_dir, 'ball_win_prob.csv'), index=False)
+    card_path = os.path.join(output_dir, 'model_card.json')
+    card = {}
+    if os.path.exists(card_path):  # keep only the old-vs-new comparison from validate_model.py
+        with open(card_path) as f:
+            prev = json.load(f)
+        if 'validation' in prev:
+            card['validation'] = prev['validation']
+    card.update({
+        'model': model_metrics['model'], 'scoring': model_metrics['scoring'],
+        'features': FEATURES, 'matches': int(ball_df['match_id'].nunique()),
+        'deliveries': int(len(ball_df)), 'auc': model_metrics['oof_auc'],
+        'brier': model_metrics['oof_brier'], 'log_loss': model_metrics['oof_log_loss'],
+        'discipline_means': discipline_means(ctx),
+        'shrink_k': round(estimate_shrink_k(center(ctx)), 1),
+        'replacement_level': {v: round(replacement_level(center(ctx), v), 5) for v in ['all', 'bat', 'bowl', 'allround']},
+    })
+    with open(card_path, 'w') as f:
+        json.dump(card, f, indent=2)
+    print(f"  ball_win_prob.csv and model_card.json written")
+
     # ── Step 14: All-players career summary (per format) ──
     print("\n" + "=" * 60)
     print("STEP 14: Building all-players summary (per format)")
@@ -663,7 +519,7 @@ def run_pipeline(data_folder, retrain=False, output_dir='cricket_impact'):
     all_players_by_format = {}
     for fmt in formats_in_data:
         fmt_players = build_all_players_summary(bat_impact, bowl_impact, info_df, ball_df,
-                                                 match_format=fmt)
+                                                 match_format=fmt, ctx=ctx)
         fmt_players['match_format'] = fmt
         all_players_by_format[fmt] = fmt_players
         # Save per-format CSV

@@ -7,8 +7,26 @@ import os
 from services import (
     process_players, get_seasons, get_player_trend, get_matches, generate_ai_summary
 )
+import insights
+import replay
 
 app = FastAPI(title="CricImpact API")
+
+
+@app.on_event("startup")
+def warm_caches():
+    """Load the CSVs and featured replays in the background so the first page load is instant."""
+    import threading
+
+    def _warm():
+        try:
+            insights.overview()
+            insights.player_list()
+            replay.featured()
+        except Exception as e:  # never block startup on a missing file
+            print(f"Cache warm-up skipped: {e}")
+
+    threading.Thread(target=_warm, daemon=True).start()
 
 # Allow CORS for React frontend (default dev port 5173 and others)
 app.add_middleware(
@@ -25,7 +43,8 @@ def read_root():
 
 @app.get("/api/seasons")
 def api_get_seasons():
-    return {"seasons": get_seasons()}
+    seasons = get_seasons()
+    return {"seasons": seasons, "data": seasons}
 
 @app.get("/api/players")
 def api_get_players(
@@ -41,6 +60,74 @@ def api_get_players(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/overview")
+def api_overview():
+    return {"data": insights.overview()}
+
+@app.get("/api/player-list")
+def api_player_list():
+    return {"data": insights.player_list()}
+
+@app.get("/api/compare")
+def api_compare(a: str, b: str):
+    try:
+        return {"data": insights.compare(a, b)}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"Player not found: {e}")
+
+@app.get("/api/story")
+def api_story():
+    """Model card, featured thrillers and the runs-vs-impact insight for the home page."""
+    return {"data": insights.clean({
+        "model": replay.model_card(),
+        "featured": replay.featured(),
+        "runs_vs_impact": replay.runs_vs_impact(),
+    })}
+
+@app.get("/api/matches/{match_id}/worm")
+def api_worm(match_id: int):
+    try:
+        return {"data": replay.worm(match_id)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="No ball-by-ball data for this match")
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+@app.get("/api/matches/{match_id}")
+def api_match_detail(match_id: int):
+    try:
+        return {"data": insights.match_detail(match_id)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+@app.post("/api/upload")
+async def api_upload(ball_file: UploadFile, info_file: UploadFile):
+    import tempfile
+    from match_impact_from_files import compute_match_rankings_from_files
+    tmpdir = tempfile.mkdtemp()
+    base = os.path.splitext(os.path.basename(ball_file.filename or "upload.csv"))[0]
+    ball_path = os.path.join(tmpdir, f"{base}.csv")
+    info_path = os.path.join(tmpdir, f"{base}_info.csv")
+    with open(ball_path, "wb") as f:
+        f.write(await ball_file.read())
+    with open(info_path, "wb") as f:
+        f.write(await info_file.read())
+    try:
+        model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cricket_impact", "models")
+        rankings = compute_match_rankings_from_files(ball_path, info_path, model_dir=model_dir)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to compute impact: {e}")
+    summary = insights.summarize_match(rankings.sort_values("rank"))
+    mid = rankings["match_id"].iloc[0] if len(rankings) else base
+    return {"data": insights.clean({"match_id": str(mid), **summary})}
+
+@app.get("/api/players/{player_name}")
+def api_player_detail(player_name: str):
+    try:
+        return {"data": insights.player_detail(player_name)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Player not found")
+
 @app.get("/api/players/{player_name}/trend")
 def api_get_player_trend(player_name: str, season: Optional[str] = "All"):
     try:
@@ -53,7 +140,7 @@ def api_get_player_trend(player_name: str, season: Optional[str] = "All"):
 def api_get_matches(season: str = "All", team: str = "All"):
     try:
         matches = get_matches(season, team)
-        return {"data": matches}
+        return {"data": insights.clean(matches)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

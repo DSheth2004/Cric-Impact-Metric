@@ -57,75 +57,95 @@ def clipped_mean(s):
     iqr = q3 - q1
     return s.clip(lower=q1 - 1.5*iqr, upper=q3 + 1.5*iqr).mean()
 
-def process_players(min_inn: int = 10, role_pick: str = "All", 
-                   season: str = "All", min_runs: int = 0, min_wkts: int = 0):
-    
-    data = get_data()
-    pdf_raw = data["pdf"]
-    mdf = data["mdf"]
-    
-    if pdf_raw is None:
+CTX_FILE = os.path.join(DIR, "player_match_context.csv")
+_ctx = {"df": None}
+
+
+def get_ctx():
+    if _ctx["df"] is None and os.path.exists(CTX_FILE):
+        df = pd.read_csv(CTX_FILE)
+        df["season"] = df["season"].astype(str)
+        _ctx["df"] = df
+    return _ctx["df"]
+
+
+def _model_card() -> Dict[str, Any]:
+    import json
+    path = os.path.join(DIR, "model_card.json")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+VIEW = {"All": "all", "Batter": "bat", "Bowler": "bowl", "All-rounder": "allround"}
+
+
+def process_players(min_inn: int = 10, role_pick: str = "All",
+                    season: str = "All", min_runs: int = 0, min_wkts: int = 0):
+    """
+    Leaderboard rows for any season x role combination, all from one formula
+    (cricket_impact/rating.py). Season views use only that season's innings.
+    """
+    from cricket_impact.rating import rate, replacement_level, center
+
+    ctx = get_ctx()
+    pdf = get_data()["pdf"]
+    if ctx is None or pdf is None:
         return []
-        
-    season_mode = season != "All" and mdf is not None
-
-    if season_mode:
-        sm = mdf[mdf["season"].astype(str) == str(season)]
-        season_players = sm.groupby("player").agg(
-            season_avg_impact=("impact_score", "mean"),
-            season_matches=("match_id", "nunique"),
-            season_total_impact=("impact_score", "sum"),
-            season_avg_perf=("performance_score", "mean"),
-        ).reset_index()
-        pdf = pdf_raw.copy()
-        pdf["role"] = pdf.apply(role_of, axis=1)
-        pdf["total_innings"] = pdf["bat_innings"] + pdf["bowl_innings"]
-        pdf = pdf[pdf["player"].isin(season_players["player"])].copy()
-        pdf = pdf.merge(season_players, on="player", how="left")
-    else:
-        pdf = pdf_raw.copy()
-        pdf["role"] = pdf.apply(role_of, axis=1)
-        pdf["total_innings"] = pdf["bat_innings"] + pdf["bowl_innings"]
-
-    pdf["total_runs"] = pdf["total_runs"].fillna(0)
-    pdf["total_wickets"] = pdf["total_wickets"].fillna(0)
-    pdf = pdf[pdf["total_innings"] >= min_inn]
-    if min_runs > 0:  pdf = pdf[pdf["total_runs"] >= min_runs]
-    if min_wkts > 0:  pdf = pdf[pdf["total_wickets"] >= min_wkts]
-
-    if len(pdf) == 0:
+    season_mode = season not in (None, "", "All")
+    card = _model_card()
+    full = center(ctx, card.get("discipline_means"))   # same baseline as the pipeline
+    c = full[full["season"] == str(season)] if season_mode else full
+    if c.empty:
+        return []
+    # Shrinkage strength and replacement level come from the whole career dataset, so a
+    # single season is judged on the same scale (within one season everyone looks "fringe").
+    view = VIEW.get(role_pick, "all")
+    k = card.get("shrink_k")
+    repl = (card.get("replacement_level") or {}).get(view)
+    if repl is None:
+        repl = replacement_level(full, view)
+    # all-rounder classification needs fewer innings inside a single season
+    r = rate(c, view, role_min_inn=4 if season_mode else 10, shrink_k=k, repl=repl)
+    if r.empty:
         return []
 
-    if role_pick == "Batter":
-        pdf = pdf[pdf["role"].isin(["Batter","All-rounder"])].copy()
-        log_vol = np.log1p(pdf["total_balls_faced"]) / np.log1p(pdf["total_balls_faced"].max())
-        raw = pdf["mean_bat_impact"] * log_vol
-        bmax = raw.max() or 1
-        pdf["display_impact"] = raw / bmax * 100
-    elif role_pick == "Bowler":
-        pdf = pdf[pdf["role"].isin(["Bowler","All-rounder"])].copy()
-        log_vol = np.log1p(pdf["total_balls_bowled"]) / np.log1p(pdf["total_balls_bowled"].max())
-        raw = pdf["mean_bowl_impact"] * log_vol
-        wmax = raw.max() or 1
-        pdf["display_impact"] = raw / wmax * 100
-    elif role_pick == "All-rounder":
-        pdf = pdf[pdf["role"]=="All-rounder"].copy()
-        bvol = np.log1p(pdf["total_balls_faced"]) / np.log1p(pdf["total_balls_faced"].max())
-        wvol = np.log1p(pdf["total_balls_bowled"]) / np.log1p(pdf["total_balls_bowled"].max())
-        raw = pdf["mean_bat_impact"] * bvol + pdf["mean_bowl_impact"] * wvol
-        cmax = raw.max() or 1
-        pdf["display_impact"] = raw / cmax * 100
-    else:
-        if season_mode:
-            pdf["display_impact"] = pdf["season_avg_impact"]
-        else:
-            pdf["display_impact"] = pdf["overall_impact"]
-
-    pdf = pdf.sort_values("display_impact", ascending=False).reset_index(drop=True)
-    
-    # Replace NaN with None for JSON serialization
-    pdf = pdf.where(pd.notnull(pdf), None)
-    return pdf.to_dict(orient="records")
+    out = pd.DataFrame({
+        "player": r.index,
+        "role": r["role"].values,
+        "display_impact": r["rating"].values,
+        "rank": r["rank"].values,
+        "total_innings": r["innings_rated"].values if role_pick in ("Batter", "Bowler") else (r["bat_innings"] + r["bowl_innings"]).values,
+        "matches": r["appearances"].values,
+        "total_runs": r["runs"].values,
+        "total_balls_faced": r["balls_faced"].values,
+        "avg_bat_sr": r["strike_rate"].values,
+        "true_bat_avg": r["bat_avg"].values,
+        "total_wickets": r["wickets"].values,
+        "total_balls_bowled": r["balls_bowled"].values,
+        "avg_economy": r["economy"].values,
+        "win_rate": r["win_rate"].values,
+        "pom_awards": r["pom"].values,
+        "impact_per_inn": (r["impact_per_inn_shrunk"] * 100).values,  # win prob points per innings
+        "impact_total": (r["impact_total"] * 100).values,
+        "value_above_repl": (r["impact_above_repl"] * 100).values,  # win-prob points above replacement
+        # per-discipline impact for the scatter; hidden below 5 innings, where one game dominates
+        "bat_impact_per_inn": (r["bat_wpa"] / r["bat_innings"].where(r["bat_innings"] >= 5) * 100).values,
+        "bowl_impact_per_inn": (r["bowl_wpa"] / r["bowl_innings"].where(r["bowl_innings"] >= 5) * 100).values,
+        "bonus": (r["bonus"] * 100).values,
+    })
+    if min_inn > 0:
+        out = out[out["total_innings"] >= min_inn]
+    if min_runs > 0:
+        out = out[out["total_runs"] >= min_runs]
+    if min_wkts > 0:
+        out = out[out["total_wickets"] >= min_wkts]
+    out = out.sort_values("display_impact", ascending=False).reset_index(drop=True)
+    out = out.replace([np.inf, -np.inf], np.nan)
+    out = out.astype(object).where(pd.notnull(out), None)
+    return out.to_dict(orient="records")
 
 def get_seasons():
     mdf = get_data()["mdf"]
@@ -215,7 +235,7 @@ def parse_explanations(text):
 def generate_ai_summary(context_data: dict, api_key: str):
     import json
     import os
-    model = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile") # specific model
+    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b") # specific model
     try:
         from groq import Groq
         client = Groq(api_key=api_key)

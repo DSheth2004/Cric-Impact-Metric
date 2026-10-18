@@ -187,6 +187,19 @@ def add_ball_level_context(ball_df):
         0
     )
 
+    # Smoothed run rate for the win probability model: the raw run rate swings wildly in
+    # the first few overs (one dot ball at 35/0 moves it a lot), which made the model treat
+    # early dot balls as costly cliffs. Pull it toward a par of 8 an over, weighted as if
+    # 12 overs had already been bowled at par, so it only matters once it is meaningful.
+    PAR_RR, PAR_OVERS = 8.0, 12.0
+    overs_bowled = ball_df['cumulative_balls'] / 6.0
+    ball_df['run_rate_smooth'] = (ball_df['cumulative_runs'] + PAR_RR * PAR_OVERS) / (overs_bowled + PAR_OVERS)
+    ball_df['rr_gap_smooth'] = np.where(
+        ball_df['innings'] == 2,
+        ball_df['required_rr'] - ball_df['run_rate_smooth'],
+        0
+    )
+
     return ball_df
 
 

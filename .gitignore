@@ -11,6 +11,9 @@ build/
 venv/
 .env/
 .env
+.env.*
+!.env.example
+*.log
 
 # IDE
 .vscode/
@@ -27,3 +30,7 @@ ipl_male_csv2/
 cricket_impact/*.csv
 cricket_impact/*.png
 cricket_impact/models/
+
+# React frontend
+frontend/node_modules/
+frontend/dist/

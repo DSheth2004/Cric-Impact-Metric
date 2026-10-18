@@ -7,10 +7,51 @@ import pandas as pd
 import numpy as np
 
 
-def compute_per_ball_wpa(ball_df):
-    """Compute per-ball WPA as diff of win_prob within each match-innings."""
+def compute_per_ball_wpa(ball_df, info_df=None):
+    """
+    Per-ball Win Probability Added, from the batting side's point of view.
+
+    Within an innings, each ball's WPA is the change in win probability it caused.
+    When info_df (with winners) is given, the whole match is credited, start to finish:
+      * first ball of the match: measured from a neutral 50% start
+      * innings break: the jump between the end of the first innings and the start
+        of the chase (the moment the total is known) goes to the first-innings batters
+        in proportion to their runs, and against the bowlers in proportion to runs conceded
+      * last ball of the chase: measured to the final result (100% or 0%)
+    so a player's WPA over a match adds up to the full swing from 50% to the result.
+    """
     df = ball_df.sort_values(['match_id', 'innings', 'over', 'ball_in_over']).reset_index(drop=True)
     df['wpa'] = df.groupby(['match_id', 'innings'])['win_prob'].diff().fillna(0)
+    if info_df is None or 'winner' not in info_df.columns:
+        return df
+
+    i1 = df['innings'] == 1
+    i2 = df['innings'] == 2
+    g1 = df[i1].groupby('match_id')
+    g2 = df[i2].groupby('match_id')
+
+    # match start: 50% before the first ball
+    first1 = g1.head(1).index
+    df.loc[first1, 'wpa'] = df.loc[first1, 'win_prob'] - 0.5
+
+    # innings break: batting-first side's win prob after the chase's first ball,
+    # minus its win prob at the end of its own innings, shared by runs scored / conceded
+    end1 = g1['win_prob'].last()
+    start2 = 1 - g2['win_prob'].first()
+    gap = (start2 - end1).dropna()
+    runs1 = g1['runs_off_bat'].sum()
+    share = df.loc[i1, 'runs_off_bat'] / df.loc[i1, 'match_id'].map(runs1).replace(0, np.nan)
+    df.loc[i1, 'wpa'] += (df.loc[i1, 'match_id'].map(gap) * share).fillna(0)
+
+    # match end: last ball of the chase measured to the actual result
+    winners = info_df.drop_duplicates('match_id').set_index('match_id')['winner']
+    last2 = g2.tail(1)
+    chaser = g2['batting_team'].first()
+    w = last2['match_id'].map(winners)
+    ok = w.notna() & (w.astype(str) != '')
+    final = (w == last2['match_id'].map(chaser)).astype(float)
+    before = last2['win_prob'] - last2['wpa']          # win prob before the last ball
+    df.loc[last2.index[ok], 'wpa'] = (final - before)[ok]
     return df
 
 

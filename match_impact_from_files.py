@@ -245,7 +245,7 @@ def compute_match_rankings_from_files(ball_path, info_path, model_dir=None):
     ball_df = predict_win_prob(ball_df, model)
 
     # WPA
-    ball_df = compute_per_ball_wpa(ball_df)
+    ball_df = compute_per_ball_wpa(ball_df, info_df)
     batter_wpa = aggregate_batter_wpa(ball_df)
     presence = compute_batter_presence_impact(ball_df)
     bowler_wpa = aggregate_bowler_wpa(ball_df)
