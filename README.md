@@ -98,6 +98,18 @@ npm run preview        # http://localhost:4173, same /api proxy
 | Match Explorer | Any IPL match: win probability replay with turning points, team impact share, player impact bars, WPA vs clutch scatter, AI summary |
 | Upload Match | Score a new match from Cricsheet CSVs with the trained win probability model |
 
+## Deploying (free): frontend on Vercel, backend on Render
+
+The backend reads compressed copies of the pipeline outputs from `backend/data/` (about 15 MB), so the server needs neither the raw Cricsheet folder nor a pipeline run. Rebuild them after any pipeline run:
+
+```bash
+python backend/pack_deploy_data.py
+```
+
+**Backend on Render (free plan).** `render.yaml` describes the service. In Render: New > Blueprint > select this repo. Set `ALLOWED_ORIGINS` to your Vercel URL and, optionally, `GROQ_API_KEY`. The free instance sleeps after 15 minutes idle, so the first request after a pause takes about a minute.
+
+**Frontend on Vercel (Hobby plan).** In Vercel: Add New > Project > import this repo. Set Root Directory to `frontend` (Vite is detected) and add the environment variable `VITE_API_URL` = your Render URL, e.g. `https://cric-impact-api.onrender.com`. `frontend/vercel.json` makes deep links such as `/player?name=V%20Kohli` work on refresh.
+
 ## Rating method (v2)
 
 **Win probability model.** `HistGradientBoostingClassifier` on 11 match-state features, with monotonic rules (a wicket can never raise the batting side's chance, extra runs can never lower it). The run rate is smoothed toward a par of 8 an over (as if 12 overs had already been bowled at par): the raw run rate swings wildly in the first few overs, which made early dot balls look like costly cliffs. Over number and phase are not used, since balls bowled already carries that information without step jumps. Every match is scored by a model trained on the other 80% of matches (5-fold cross-fitting by match), so no player is credited using a model that already knew the result.

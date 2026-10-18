@@ -1,0 +1,21 @@
+# Render Blueprint for the CricImpact API (free plan).
+# Render dashboard -> New -> Blueprint -> pick this repo. Fill in the two secret values when asked.
+services:
+  - type: web
+    name: cric-impact-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: ALLOWED_ORIGINS        # your Vercel URL, e.g. https://cric-impact.vercel.app
+        sync: false
+      - key: ALLOWED_ORIGIN_REGEX   # optional: allow Vercel preview URLs
+        value: https://.*\.vercel\.app
+      - key: GROQ_API_KEY           # optional: enables the AI match analyst
+        sync: false

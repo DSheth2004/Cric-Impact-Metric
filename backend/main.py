@@ -28,11 +28,14 @@ def warm_caches():
 
     threading.Thread(target=_warm, daemon=True).start()
 
-# Allow CORS for React frontend (default dev port 5173 and others)
+# CORS: in production set ALLOWED_ORIGINS to your frontend URL(s), comma-separated,
+# e.g. https://cric-impact.vercel.app. Defaults to allowing any origin (local dev).
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For development, allow all
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_origin_regex=os.getenv("ALLOWED_ORIGIN_REGEX") or None,  # e.g. https://.*\.vercel\.app for previews
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -113,8 +116,8 @@ async def api_upload(ball_file: UploadFile, info_file: UploadFile):
     with open(info_path, "wb") as f:
         f.write(await info_file.read())
     try:
-        model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cricket_impact", "models")
-        rankings = compute_match_rankings_from_files(ball_path, info_path, model_dir=model_dir)
+        from services import model_dir
+        rankings = compute_match_rankings_from_files(ball_path, info_path, model_dir=model_dir())
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to compute impact: {e}")
     summary = insights.summarize_match(rankings.sort_values("rank"))

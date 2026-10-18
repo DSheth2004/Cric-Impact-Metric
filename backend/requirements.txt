@@ -1,8 +1,12 @@
-fastapi
-uvicorn
-pandas
-numpy
-groq
-python-dotenv
-pydantic
-python-multipart
+# Backend (FastAPI) dependencies, pinned so a server install matches local.
+# scikit-learn must match the version that saved the model (cricket_impact/models/win_prob_model.pkl).
+fastapi==0.143.3
+uvicorn==0.54.0
+pandas==2.3.3
+numpy==2.4.1
+scikit-learn==1.8.0
+joblib==1.5.3
+pydantic==2.14.1
+python-multipart==0.0.32
+groq==1.7.0
+python-dotenv==1.2.4

@@ -6,10 +6,9 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from services import DIR, get_data, role_of, get_player_trend
+from services import DIR, data_file, get_data, role_of, get_player_trend
 
-PART_FILE = os.path.join(DIR, "batting_partnerships.csv")
-TANDEM_FILE = os.path.join(DIR, "bowling_partnerships.csv")
+PART_FILE = data_file("batting_partnerships.csv")
 _extra: Dict[str, Optional[pd.DataFrame]] = {"part": None, "tandem": None}
 
 

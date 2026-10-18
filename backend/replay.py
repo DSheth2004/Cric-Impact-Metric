@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from services import DIR
+from services import DIR, data_file
 from insights import clean, records, _players
 
-BALL_FILE = os.path.join(DIR, "ball_win_prob.csv")
-CARD_FILE = os.path.join(DIR, "model_card.json")
+BALL_FILE = data_file("ball_win_prob.csv")
+CARD_FILE = data_file("model_card.json")
 DATA_FOLDER = os.path.join(os.path.dirname(DIR), "ipl_male_csv2")
 
 # Hand-picked thrillers for the home page replay
@@ -33,8 +33,19 @@ def _balls() -> Optional[pd.DataFrame]:
 
 @lru_cache(maxsize=1)
 def _info() -> pd.DataFrame:
-    from cricket_impact.data_loader import load_match_info
-    return load_match_info(DATA_FOLDER) if os.path.isdir(DATA_FOLDER) else pd.DataFrame()
+    """Winner, margin, venue and Player of the Match per match: from the raw Cricsheet folder
+    locally, or from the small match_info.csv(.gz) bundled for deployment."""
+    if os.path.isdir(DATA_FOLDER):
+        from cricket_impact.data_loader import load_match_info
+        return load_match_info(DATA_FOLDER)
+    path = data_file("match_info.csv")
+    if os.path.exists(path):
+        df = pd.read_csv(path)
+        for c in ("winner", "player_of_match", "venue"):
+            df[c] = df[c].fillna("")
+        df["season"] = df["season"].astype(str)
+        return df
+    return pd.DataFrame()
 
 
 def model_card() -> Dict[str, Any]:

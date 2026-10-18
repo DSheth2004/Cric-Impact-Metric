@@ -3,6 +3,10 @@ import { useEffect, useState } from 'react'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Row = Record<string, any>
 
+// Backend address. Empty in local dev (Vite proxies /api to the local backend);
+// in production set VITE_API_URL to the Render URL, e.g. https://cric-impact-api.onrender.com
+const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '')
+
 async function parse<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = r.statusText
@@ -13,11 +17,11 @@ async function parse<T>(r: Response): Promise<T> {
 }
 
 export async function apiGet<T = Row>(path: string): Promise<T> {
-  return parse<T>(await fetch(`/api${path}`))
+  return parse<T>(await fetch(`${API_BASE}/api${path}`))
 }
 
 export async function apiPost<T = Row>(path: string, body: BodyInit, json = false): Promise<T> {
-  return parse<T>(await fetch(`/api${path}`, {
+  return parse<T>(await fetch(`${API_BASE}/api${path}`, {
     method: 'POST',
     body,
     headers: json ? { 'Content-Type': 'application/json' } : undefined,

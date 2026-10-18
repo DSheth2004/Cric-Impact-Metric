@@ -15,11 +15,33 @@ except ImportError:
 # --- Paths relative to backend directory ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIR = os.path.join(BASE_DIR, "cricket_impact")
-P_FILE   = os.path.join(DIR, "all_players_impact_T20.csv")
-M_FILE   = os.path.join(DIR, "match_rankings.csv")
-BAT_FILE = os.path.join(DIR, "batting_impact.csv")
-BWL_FILE = os.path.join(DIR, "bowling_impact.csv")
-RIV_FILE = os.path.join(DIR, "batter_vs_bowler_rivalry.csv")
+# On a server without the pipeline outputs (e.g. Render), fall back to the compressed
+# copies in backend/data/ made by backend/pack_deploy_data.py.
+DEPLOY_DIR = os.path.join(BASE_DIR, "backend", "data")
+
+
+def data_file(name: str) -> str:
+    """Path to a pipeline output: cricket_impact/<name> if present, else backend/data/<name>[.gz]."""
+    local = os.path.join(DIR, name)
+    if os.path.exists(local):
+        return local
+    for cand in (os.path.join(DEPLOY_DIR, name + ".gz"), os.path.join(DEPLOY_DIR, name)):
+        if os.path.exists(cand):
+            return cand
+    return local
+
+
+def model_dir() -> str:
+    """Folder holding win_prob_model.pkl."""
+    local = os.path.join(DIR, "models")
+    return local if os.path.exists(os.path.join(local, "win_prob_model.pkl")) else DEPLOY_DIR
+
+
+P_FILE   = data_file("all_players_impact_T20.csv")
+M_FILE   = data_file("match_rankings.csv")
+BAT_FILE = data_file("batting_impact.csv")
+BWL_FILE = data_file("bowling_impact.csv")
+RIV_FILE = data_file("batter_vs_bowler_rivalry.csv")
 
 # Global variables for caching in memory
 _data = {
@@ -57,7 +79,7 @@ def clipped_mean(s):
     iqr = q3 - q1
     return s.clip(lower=q1 - 1.5*iqr, upper=q3 + 1.5*iqr).mean()
 
-CTX_FILE = os.path.join(DIR, "player_match_context.csv")
+CTX_FILE = data_file("player_match_context.csv")
 _ctx = {"df": None}
 
 
@@ -71,7 +93,7 @@ def get_ctx():
 
 def _model_card() -> Dict[str, Any]:
     import json
-    path = os.path.join(DIR, "model_card.json")
+    path = data_file("model_card.json")
     try:
         with open(path) as f:
             return json.load(f)

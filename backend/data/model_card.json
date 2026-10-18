@@ -1,0 +1,67 @@
+{
+  "validation": {
+    "v1": {
+      "reported_auc": 0.8152,
+      "reported_brier": 0.1752,
+      "per_ball": {
+        "early_dots_moving_over_3pp": 0.0495,
+        "wickets_raising_batting_wp": 0.1013,
+        "boundaries_lowering_batting_wp": 0.1199,
+        "dots_raising_batting_wp": 0.2515
+      },
+      "player_of_match": {
+        "matches": 1169,
+        "top_wpa_is_pom": 0.4157,
+        "pom_in_top3_wpa": 0.6938
+      },
+      "crossfit_auc": 0.7818,
+      "crossfit_brier": 0.188
+    },
+    "v2": {
+      "crossfit_auc": 0.7873,
+      "crossfit_brier": 0.1859,
+      "per_ball": {
+        "early_dots_moving_over_3pp": 0.0512,
+        "wickets_raising_batting_wp": 0.0022,
+        "boundaries_lowering_batting_wp": 0.0007,
+        "dots_raising_batting_wp": 0.0
+      },
+      "player_of_match": {
+        "matches": 1169,
+        "top_wpa_is_pom": 0.4089,
+        "pom_in_top3_wpa": 0.71
+      }
+    }
+  },
+  "model": "HistGradientBoostingClassifier (monotonic)",
+  "scoring": "5-fold cross-fitting by match",
+  "features": [
+    "innings",
+    "cumulative_runs",
+    "cumulative_wickets",
+    "cumulative_balls",
+    "run_rate_smooth",
+    "required_rr",
+    "rr_gap_smooth",
+    "wickets_remaining",
+    "target",
+    "venue_difficulty",
+    "is_chasing"
+  ],
+  "matches": 1169,
+  "deliveries": 278205,
+  "auc": 0.7873,
+  "brier": 0.1859,
+  "log_loss": 0.5411,
+  "discipline_means": {
+    "bat": -0.006960358144810783,
+    "bowl": 0.008881252487988855
+  },
+  "shrink_k": 79.9,
+  "replacement_level": {
+    "all": -0.02193,
+    "bat": -0.01632,
+    "bowl": -0.01854,
+    "allround": -0.02193
+  }
+}
